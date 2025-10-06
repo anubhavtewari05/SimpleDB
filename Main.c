@@ -35,6 +35,12 @@ Buffer* new_input_buffer(){
     ipbuffer->input_length=0;
 } /*Buffer Allocation */
 
+
+void close_input_buffer(Buffer* ipbuffer) {
+    free(ipbuffer->buffer);
+    free(ipbuffer);
+} /*Buffer De-allocation*/
+
 MetaCommandResult do_meta_command(Buffer* ipbuffer){
     if (strcmp(ipbuffer->buffer, ".exit") == 0) {
         close_input_buffer(ipbuffer);
@@ -82,11 +88,6 @@ void read_input(Buffer* ipbuffer){
     //Ignore trailing newline 
     ipbuffer->input_length = bytes_read-1;
     ipbuffer->buffer[bytes_read - 1] = 0;
-}
-
-void close_input_buffer(Buffer* ipbuffer) {
-    free(ipbuffer->buffer);
-    free(ipbuffer);
 }
 
 int main(int argc, char* argv[]){
