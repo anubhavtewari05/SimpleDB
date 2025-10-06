@@ -52,7 +52,7 @@ MetaCommandResult do_meta_command(Buffer* ipbuffer){
 } // TO Check and return if the ip is a Meta command and if its successfully executed
 
 PrepareResult prepare_statement(Buffer* ipbuffer, Statement* statement){
-    if (strcmp(ipbuffer->buffer, "insert",6) == 0) {
+    if (strncmp(ipbuffer->buffer, "insert",6) == 0) {
         statement->type = STATEMENT_INSERT;
         return PREPARE_SUCCESS;
     }
@@ -102,7 +102,7 @@ int main(int argc, char* argv[]){
                 case(META_COMMAND_SUCCESS):
                     continue;
                 case(META_COMMAND_UNRECOGNIZED):
-                    printf("Unrecognized Command %s \n", ipbuffer);
+                    printf("Unrecognized Command '%s'.\n", ipbuffer->buffer);
                     continue;
             }
         }
