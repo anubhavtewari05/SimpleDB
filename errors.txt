@@ -1,0 +1,21 @@
+Key fixes performed
+
+Cast void* pointer arithmetic to char* to avoid undefined behavior.
+
+Fixed new_table() usage: Table* table = new_table(); (was using wrong type).
+
+Implemented print_row() used by execute_select.
+
+Fixed free_table() to safely free all allocated pages.
+
+Fixed sscanf() to read from ipbuffer->buffer and use .email field.
+
+Fixed missing return in new_input_buffer().
+
+Corrected variable/field names: num_rows consistency.
+
+Removed stray / duplicate calls to execute_statement() and fixed how results are handled.
+
+Added missing semicolons and correct types for getline result.
+
+Added close_input_buffer usage and safe exit behavior.
