@@ -3,6 +3,9 @@
 #include<stdbool.h>
 #include<string.h>
 #include<stdint.h>
+#include<fcntl.h>
+#include<sys/stat.h>
+#include<windows.h>
 
 
 #define COLUMN_USERNAME_SIZE 32
@@ -31,14 +34,45 @@ typedef enum{
 
 typedef struct{
     uint32_t id;
-    char username[COLUMN_USERNAME_SIZE];
-    char email[COLUMN_EMAIL_SIZE];
+    char username[COLUMN_USERNAME_SIZE + 1 ]; // + 1 for NUll termination 
+    char email[COLUMN_EMAIL_SIZE + 1 ];
 } Row;
 
 typedef struct{
     StatementType type;
     Row row_to_insert; 
 } Statement;
+
+struct Connection_t {
+  int file_descriptor;
+};
+typedef struct Connection_t Connection;
+
+Connection* open_connection(char* filename) {
+    int fd = open(
+            filename,
+            O_RDWR | O_CREAT,       // Read/write, create if not exists
+            S_IREAD       // Owner: read permission
+);
+
+  if (fd == -1) {
+    printf("Unable to open file '%s'\n", filename);
+    exit(EXIT_FAILURE);
+  }
+
+  Connection* connection = malloc(sizeof(Connection));
+  connection->file_descriptor = fd;
+
+  return connection;
+}
+
+char* get_db_filename(int argc, char* argv[]) {
+  if (argc < 2) {
+    printf("Must supply a filename for the database.\n");
+    exit(EXIT_FAILURE);
+  }
+  return argv[1];
+}
 
 #define size_of_attribute(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
 
@@ -51,11 +85,11 @@ const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
 #define ID_OFFSET 0
 #define USERNAME_OFFSET (ID_OFFSET + ID_SIZE)
 #define EMAIL_OFFSET (USERNAME_OFFSET + USERNAME_SIZE)
-#define ROW_SIZE (ID_SIZE + USERNAME_SIZE + EMAIL_SIZE)
+#define ROW_SIZE sizeof(Row)
 
 #define TABLE_MAX_PAGES 100
 const uint32_t PAGE_SIZE = 4096; // 4KB
-#define ROWS_PER_PAGE PAGE_SIZE/ROW_SIZE
+#define ROWS_PER_PAGE (PAGE_SIZE/ROW_SIZE)
 #define TABLE_MAX_ROWS (ROWS_PER_PAGE * TABLE_MAX_PAGES)
 
 
@@ -76,42 +110,24 @@ void print_row(Row* row){
 }
 
 void serialize_row(Row* source, void* destination) {
-    uint8_t* dest = (uint8_t*) destination;  // cast for byte-wise arithmetic
-
-    memcpy(dest + ID_OFFSET, &(source->id), ID_SIZE);
-    memcpy(dest + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
-    memcpy(dest + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
+    memcpy((char*)destination + ID_OFFSET, &(source->id), ID_SIZE);
+    memcpy((char*)destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
+    memcpy((char*)destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
 }
 
 void deserialize_row(void* source, Row* destination) {
-    uint8_t* src = (uint8_t*) source;  // cast for byte-wise arithmetic
-
-    memcpy(&(destination->id), src + ID_OFFSET, ID_SIZE);
-    memcpy(&(destination->username), src + USERNAME_OFFSET, USERNAME_SIZE);
-    memcpy(&(destination->email), src + EMAIL_OFFSET, EMAIL_SIZE);
+    memcpy(&(destination->id), (char*)source + ID_OFFSET, ID_SIZE);
+    memcpy(&(destination->username), (char*)source + USERNAME_OFFSET, USERNAME_SIZE);
+    memcpy(&(destination->email), (char*)source + EMAIL_OFFSET, EMAIL_SIZE);
 }
+
 
 void* row_slot(Table* table, uint32_t row_num) {
     uint32_t page_num = row_num / ROWS_PER_PAGE;
 
-    /* sanity check: ensure pages array exists and page_num is in range */
-    if (table == NULL || table->pages == NULL) {
-        fprintf(stderr, "row_slot: table or table->pages is NULL\n");
-        return NULL;
-    }
-    if (page_num >= TABLE_MAX_PAGES) { /* define TABLE_MAX_PAGES or use table->num_pages */
-        fprintf(stderr, "row_slot: page_num %u out of range (max %u)\n",
-                page_num, (unsigned)TABLE_MAX_PAGES);
-        return NULL;
-    }
-
     void* page = table->pages[page_num];
     if (page == NULL) {
         page = malloc(PAGE_SIZE);
-        if (page == NULL) {
-            perror("malloc PAGE_SIZE");
-            return NULL;
-        }
         memset(page, 0, PAGE_SIZE);
         table->pages[page_num] = page;
     }
@@ -119,15 +135,9 @@ void* row_slot(Table* table, uint32_t row_num) {
     uint32_t row_offset = row_num % ROWS_PER_PAGE;
     uint32_t byte_offset = row_offset * ROW_SIZE;
 
-    /* make sure we won't walk off the page */
-    if (byte_offset + ROW_SIZE > PAGE_SIZE) {
-        fprintf(stderr, "row_slot: computed offset out of page bounds\n");
-        return NULL;
-    }
-
-    /* IMPORTANT: cast to a byte pointer for correct pointer arithmetic */
     return (void *)((uint8_t*)page + byte_offset);
 }
+
 
 /*void* row_slot(Table* table, uint32_t row_num) {
     uint32_t page_num = row_num/ ROWS_PER_PAGE;
@@ -188,10 +198,14 @@ MetaCommandResult do_meta_command(Buffer* ipbuffer){
 PrepareResult prepare_statement(Buffer* ipbuffer, Statement* statement){
     if (strncmp(ipbuffer->buffer, "insert",6) == 0) {
         statement->type = STATEMENT_INSERT;
-        int args_assigned = sscanf(ipbuffer->buffer,"insert %d %s %s", &(statement->row_to_insert.id),statement->row_to_insert.username,statement->row_to_insert.email);
+        int args_assigned = sscanf(ipbuffer->buffer,"insert %d %31s %255s", &(statement->row_to_insert.id),statement->row_to_insert.username,statement->row_to_insert.email);
         if (args_assigned < 3) {
             return PREPARE_SYNTAX_ERROR;
         }
+        printf("prepare: id=%u username='%s' email='%s'\n",
+                statement->row_to_insert.id,
+                statement->row_to_insert.username,
+                statement->row_to_insert.email);
         return PREPARE_SUCCESS;
     }
     if (strcmp(ipbuffer->buffer, "select") == 0) {
@@ -207,17 +221,23 @@ ExecuteResult execute_insert(Statement* statement, Table* table){
     }
 
     Row* row_to_insert = &(statement->row_to_insert);
-
-    serialize_row(row_to_insert, row_slot(table,table->num_rows));
+    void* slot = row_slot(table, table->num_rows);
+    serialize_row(row_to_insert, slot);
+    printf("Inserting id=%u username=%s email=%s into slot %p\n",
+       row_to_insert->id, row_to_insert->username, row_to_insert->email, slot);  
+    serialize_row(row_to_insert, slot);
+    printf("row 0 slot = %p, row 1 slot = %p\n",
+       row_slot(table,0), row_slot(table,1));
     table->num_rows += 1 ;
     return EXECUTE_SUCCESS;
 }
 
 ExecuteResult execute_select(Statement* statement, Table* table){
     Row row;
-    for(uint32_t i=0; i< table->num_rows; i++)
+    for(uint32_t i=0; i<table->num_rows; i++)
     {
         deserialize_row(row_slot(table,i),&row);
+        printf("Reading row %u from slot %p\n", i, row_slot(table, i));  
         print_row(&row);
     }
     return EXECUTE_SUCCESS;
@@ -234,17 +254,18 @@ ExecuteResult execute_statement(Statement* statement, Table* table){
 
 void print_prompt(){
     printf("SimpleDB > ");
+    fflush(stdout);  
 } /*THe prompt for the DB*/
 
-void read_input(Buffer* ipbuffer){
-    size_t bytes_read = getline(&(ipbuffer->buffer), &(ipbuffer->buffer_length),stdin);
-    if(bytes_read <=0) {
+void read_input(Buffer* ipbuffer) {
+    size_t bytes_read = getline(&(ipbuffer->buffer), &(ipbuffer->buffer_length), stdin);
+    if(bytes_read == -1) {
         printf("Error Reading Input \n");
         exit(EXIT_FAILURE);
     }
-    
-    //Ignore trailing newline 
-    ipbuffer->input_length = bytes_read-1;
+
+    // Ignore trailing newline
+    ipbuffer->input_length = bytes_read - 1;
     ipbuffer->buffer[bytes_read - 1] = 0;
 }
 
